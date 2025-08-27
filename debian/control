@@ -2,10 +2,10 @@ Source: timekeeper
 Section: admin
 Priority: optional
 Build-Depends: cmake (>= 2.8.10),
-               debhelper (>= 9)
-Maintainer: Marius Gripsgard <marius@ubports.com>
-Standards-Version: 3.9.5
-Homepage: https://github.com/ubports/timekeeper
+               debhelper-compat (= 13)
+Maintainer: Bardia Moshiri <bardia@furilabs.com>
+Standards-Version: 4.7.0
+Homepage: https://github.com/furilabs/timekeeper
 
 Package: timekeeper
 Architecture: armhf arm64 i386 amd64
