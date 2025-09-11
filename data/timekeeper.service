@@ -1,0 +1,12 @@
+[Unit]
+Description=keep/restore RTC offset
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/sbin/timekeeper restore
+ExecStop=/usr/sbin/timekeeper store
+
+[Install]
+WantedBy=sysinit.target
+
