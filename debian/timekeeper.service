@@ -4,8 +4,8 @@ Description=timekeeper
 [Service]
 Type=oneshot
 RemainAfterExit=yes
-ExecStart=/usr/bin/timekeeper restore
-ExecStop=/usr/bin/timekeeper store
+ExecStart=/usr/sbin/timekeeper restore
+ExecStop=/usr/sbin/timekeeper store
 
 [Install]
 WantedBy=sysinit.target
