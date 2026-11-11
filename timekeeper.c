@@ -29,13 +29,35 @@ get_offset_file_path(void)
 }
 
 static gboolean
-read_int_from_file(const gchar *filename, gint64 *value)
+ensure_data_dir(void)
+{
+    g_autofree gchar *data_dir = get_data_dir();
+
+    if (g_mkdir_with_parents(data_dir, 0755) != 0) {
+        g_warning("Cannot create data directory: %s", g_strerror(errno));
+        return FALSE;
+    }
+
+    return TRUE;
+}
+
+static gboolean
+read_int_from_file(const gchar *filename, gint64 *value, gboolean *not_found)
 {
     g_autoptr(GError) error = NULL;
     g_autofree gchar *contents = NULL;
     gchar *endptr = NULL;
 
+    if (not_found)
+        *not_found = FALSE;
+
     if (!g_file_get_contents(filename, &contents, NULL, &error)) {
+        if (not_found &&
+            g_error_matches(error, G_FILE_ERROR, G_FILE_ERROR_NOENT)) {
+            *not_found = TRUE;
+            return FALSE;
+        }
+
         g_warning("Failed to read file %s: %s", filename, error->message);
         return FALSE;
     }
@@ -58,13 +80,6 @@ static gint
 write_int_to_file(const gchar *filename, gint64 value)
 {
     g_autoptr(GError) error = NULL;
-    g_autofree gchar *data_dir = get_data_dir();
-
-    if (g_mkdir_with_parents(data_dir, 0755) != 0) {
-        g_warning("Cannot create data directory: %s", g_strerror(errno));
-        return -1;
-    }
-
     g_autofree gchar *contents = g_strdup_printf("%" G_GINT64_FORMAT, value);
 
     if (!g_file_set_contents(filename, contents, -1, &error)) {
@@ -78,7 +93,7 @@ write_int_to_file(const gchar *filename, gint64 value)
 static gboolean
 read_since_epoch(gint64 *value)
 {
-    return read_int_from_file(RTC_SYS_FILE, value);
+    return read_int_from_file(RTC_SYS_FILE, value, NULL);
 }
 
 static gint
@@ -89,10 +104,10 @@ write_offset(gint64 offset)
 }
 
 static gboolean
-read_offset(gint64 *value)
+read_offset(gint64 *value, gboolean *not_found)
 {
     g_autofree gchar *offset_file = get_offset_file_path();
-    return read_int_from_file(offset_file, value);
+    return read_int_from_file(offset_file, value, not_found);
 }
 
 static gint64
@@ -142,9 +157,15 @@ restore_time_offset(void)
     gint64 time_offset = 0;
     gint64 epoch_since = 0;
     gint64 final_time = 0;
+    gboolean not_found = FALSE;
     gint ret = -1;
 
-    if (!read_offset(&time_offset)) {
+    if (!read_offset(&time_offset, &not_found)) {
+        if (not_found) {
+            g_print("Nothing to restore\n");
+            return 0;
+        }
+
         g_warning("Failed to read time offset");
         return -1;
     }
@@ -191,16 +212,22 @@ print_usage(const gchar *program_name)
 int
 main(int argc, char *argv[])
 {
-    if (argc < 2) {
+    if (argc != 2) {
         print_usage(argv[0]);
         return 1;
     }
 
+    if (g_strcmp0(argv[1], "restore") != 0 &&
+        g_strcmp0(argv[1], "store") != 0) {
+        print_usage(argv[0]);
+        return 1;
+    }
+
+    if (!ensure_data_dir())
+        return 1;
+
     if (g_strcmp0(argv[1], "restore") == 0)
         return restore_time_offset();
-    else if (g_strcmp0(argv[1], "store") == 0)
+    else
         return store_time_offset();
-
-    print_usage(argv[0]);
-    return 1;
 }
