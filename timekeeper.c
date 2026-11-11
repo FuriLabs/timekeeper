@@ -1,3 +1,4 @@
+
 /**
  * SPDX-License-Identifier: GPL-2.0-only
  * Copyright (C) 2025 Bardia Moshiri <bardia@furilabs.com>
@@ -6,6 +7,7 @@
 #include <glib.h>
 #include <glib/gstdio.h>
 #include <sys/time.h>
+#include <time.h>
 #include <errno.h>
 
 #define RTC_SYS_FILE "/sys/class/rtc/rtc0/since_epoch"
@@ -26,43 +28,44 @@ get_offset_file_path(void)
     return g_build_filename(data_dir, OFFSET_FILENAME, NULL);
 }
 
-static gint
-read_int_from_file(const gchar *filename)
+static gboolean
+read_int_from_file(const gchar *filename, gint64 *value)
 {
     g_autoptr(GError) error = NULL;
     g_autofree gchar *contents = NULL;
-    gsize length;
+    gchar *endptr = NULL;
 
-    if (!g_file_get_contents(filename, &contents, &length, &error)) {
+    if (!g_file_get_contents(filename, &contents, NULL, &error)) {
         g_warning("Failed to read file %s: %s", filename, error->message);
-        return -1;
+        return FALSE;
     }
 
     g_strstrip(contents);
-    gint64 value = g_ascii_strtoll(contents, NULL, 10);
 
-    if (value == 0 && errno == EINVAL) {
+    errno = 0;
+    gint64 parsed = g_ascii_strtoll(contents, &endptr, 10);
+
+    if (errno == ERANGE || endptr == contents || *endptr != '\0') {
         g_warning("Invalid number format in file %s", filename);
-        return -1;
+        return FALSE;
     }
 
-    return (gint)value;
+    *value = parsed;
+    return TRUE;
 }
 
 static gint
-write_int_to_file(const gchar *filename, gint value)
+write_int_to_file(const gchar *filename, gint64 value)
 {
     g_autoptr(GError) error = NULL;
     g_autofree gchar *data_dir = get_data_dir();
 
     if (g_mkdir_with_parents(data_dir, 0755) != 0) {
-        if (errno != EEXIST) {
-            g_warning("Cannot create data directory: %s", g_strerror(errno));
-            return -1;
-        }
+        g_warning("Cannot create data directory: %s", g_strerror(errno));
+        return -1;
     }
 
-    g_autofree gchar *contents = g_strdup_printf("%d", value);
+    g_autofree gchar *contents = g_strdup_printf("%" G_GINT64_FORMAT, value);
 
     if (!g_file_set_contents(filename, contents, -1, &error)) {
         g_warning("Failed to write file %s: %s", filename, error->message);
@@ -72,38 +75,38 @@ write_int_to_file(const gchar *filename, gint value)
     return 0;
 }
 
-static gint
-read_since_epoch(void)
+static gboolean
+read_since_epoch(gint64 *value)
 {
-    return read_int_from_file(RTC_SYS_FILE);
+    return read_int_from_file(RTC_SYS_FILE, value);
 }
 
 static gint
-write_offset(gint offset)
+write_offset(gint64 offset)
 {
     g_autofree gchar *offset_file = get_offset_file_path();
     return write_int_to_file(offset_file, offset);
 }
 
-static gint
-read_offset(void)
+static gboolean
+read_offset(gint64 *value)
 {
     g_autofree gchar *offset_file = get_offset_file_path();
-    return read_int_from_file(offset_file);
+    return read_int_from_file(offset_file, value);
 }
 
-static gint
+static gint64
 get_current_time(void)
 {
-    return (gint)time(NULL);
+    return g_get_real_time() / G_USEC_PER_SEC;
 }
 
 static gint
 store_time_offset(void)
 {
-    gint current_time = 0;
-    gint epoch_since = 0;
-    gint offset = 0;
+    gint64 current_time = 0;
+    gint64 epoch_since = 0;
+    gint64 offset = 0;
     gint ret = -1;
 
     current_time = get_current_time();
@@ -112,17 +115,16 @@ store_time_offset(void)
         return -1;
     }
 
-    epoch_since = read_since_epoch();
-    if (epoch_since < 0) {
+    if (!read_since_epoch(&epoch_since) || epoch_since < 0) {
         g_warning("Failed to read epoch_since");
         return -1;
     }
 
     offset = current_time - epoch_since;
 
-    g_debug("Time now is %d", current_time);
-    g_debug("Epoch since is %d", epoch_since);
-    g_debug("Offset is %d", offset);
+    g_debug("Time now is %" G_GINT64_FORMAT, current_time);
+    g_debug("Epoch since is %" G_GINT64_FORMAT, epoch_since);
+    g_debug("Offset is %" G_GINT64_FORMAT, offset);
 
     ret = write_offset(offset);
     if (ret == 0)
@@ -137,31 +139,39 @@ static gint
 restore_time_offset(void)
 {
     struct timeval tv;
-    gint time_offset = 0;
-    gint epoch_since = 0;
-    gint final_time = 0;
+    gint64 time_offset = 0;
+    gint64 epoch_since = 0;
+    gint64 final_time = 0;
     gint ret = -1;
 
-    time_offset = read_offset();
-    if (time_offset < 0) {
+    if (!read_offset(&time_offset)) {
         g_warning("Failed to read time offset");
         return -1;
     }
 
-    epoch_since = read_since_epoch();
-    if (epoch_since < 0) {
+    if (!read_since_epoch(&epoch_since) || epoch_since < 0) {
         g_warning("Failed to read epoch_since");
         return -1;
     }
 
     final_time = epoch_since + time_offset;
 
-    g_debug("Offset is %d", time_offset);
-    g_debug("Epoch since is %d", epoch_since);
-    g_debug("Final time is %d", final_time);
+    if (final_time < 0) {
+        g_warning("Calculated time is negative");
+        return -1;
+    }
 
-    tv.tv_sec = final_time;
+    g_debug("Offset is %" G_GINT64_FORMAT, time_offset);
+    g_debug("Epoch since is %" G_GINT64_FORMAT, epoch_since);
+    g_debug("Final time is %" G_GINT64_FORMAT, final_time);
+
+    tv.tv_sec = (time_t)final_time;
     tv.tv_usec = 0;
+
+    if ((gint64)tv.tv_sec != final_time) {
+        g_warning("Restored time cannot be represented by time_t");
+        return -1;
+    }
 
     ret = settimeofday(&tv, NULL);
     if (ret != 0)
